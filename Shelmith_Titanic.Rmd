@@ -63,9 +63,9 @@ titanic_dataset$Embarked<-as.factor(titanic_dataset$Embarked)
 
 ####8. Imputation of missing values using mice
 ```{r}
-titanic_imputation<- mice(titanic_dataset[, c("Age","Embarked","Fare")], method = "cart", seed = 201,m = 5)
+titanic_imputation<- mice(titanic_dataset[, c("Age","Embarked","Fare")], method = "cart", seed = 201,m = 30)
 
-titanic_imputation <- complete(titanic_imputation, sample(c(1:5), 1))
+titanic_imputation <- complete(titanic_imputation, sample(c(1:30), 1))
 titanic_dataset2 <- cbind.data.frame(titanic_dataset[, c(-5,-8,-9)], titanic_imputation)
 
 missingness2 = data.frame(sapply(titanic_dataset2,function(x) sum(is.na(x))))
@@ -97,7 +97,7 @@ test.dataset2$data<-NULL
 
 ####10. Take care of imbalanced data
 ```{r}
-train.dataset.rose <- ROSE(Survived ~ ., data = train.dataset2[,-1], seed = seed_object)$data
+train.dataset.rose <- ROSE(Survived ~ ., data = train.dataset2[,-1], seed = 567)$data
 #train.dataset.rose$PassengerId<-train.dataset2$PassengerId
 table(train.dataset.rose$Survived)
 ```
@@ -105,11 +105,12 @@ table(train.dataset.rose$Survived)
 ####11. Create the train control object
 ```{r}
 myControl <- trainControl(
-  method = "repeatedcv", number=5, repeats=5,
+  method = "repeatedcv", number=10, repeats=7,
   classProbs = FALSE, 
   verboseIter = TRUE,
   savePredictions = TRUE
 )
+
 ```
 
 ####12. Fit a ridge or lasso model
@@ -141,7 +142,7 @@ accuracy
 
 titanic_submission<-test.dataset2.rose_glmnet%>%
   dplyr::select(PassengerId,Survived)
-write.csv(titanic_submission,"titanic_submission_glmnet.csv")
+write.csv(titanic_submission,"titanic_submission_glmnet4.csv")
 ## training data accuracy on glmnet is 0.7800224
 
 ##The score is 0.76555
@@ -178,8 +179,41 @@ accuracy
 
 titanic_submission<-test.dataset2.rose_xgb%>%
   dplyr::select(PassengerId,Survived)
-write.csv(titanic_submission,"titanic_submission_xgb.csv")
+write.csv(titanic_submission,"titanic_submission_xgb2.csv")
 
 ## The score is 0.73684
 ```
 
+####16. Random forest model
+```{r}
+#Need to tune on two parameters
+set.seed(seed_object)
+model_rf <- train(
+  Survived ~ ., data = train.dataset.rose,
+  metric = "Accuracy",
+  tuneLength = 10,
+  method = "ranger",
+  trControl = myControl,
+  preProcess = c('zv', 'center', 'scale', 'pca')
+)
+
+```
+
+```{r}
+train.dataset.rose_rf<-train.dataset.rose
+test.dataset2.rose_rf<-test.dataset2
+test.dataset2.rose_rf$Survived <- predict(model_xgb, newdata = test.dataset2.rose_rf)
+
+
+train.dataset.rose_rf$Survived2<- predict(model_xgb, newdata = train.dataset.rose_rf)
+conf.matrix<-table(train.dataset.rose_rf$Survived,train.dataset.rose_rf$Survived2)
+conf.matrix
+
+accuracy = (sum(conf.matrix[1],conf.matrix[4])/sum(conf.matrix))
+accuracy
+## training data accuracy on rf is 0.9113356
+
+titanic_submission<-test.dataset2.rose_rf%>%
+  dplyr::select(PassengerId,Survived)
+write.csv(titanic_submission,"titanic_submission_rf2.csv")
+```
