@@ -1,0 +1,185 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### 1. Setting the working directory
+```{r}
+setwd("/Users/busara/Documents/Personal Development/R/Titanic")
+seed_object = 331
+```
+
+####2. Loading the required packages
+```{r}
+pkgs <- c("caret", 'caretEnsemble', "dplyr", "readr", "data.table", 
+          "lubridate", "imputeMissings", "VIM","Hmisc","mice","ROSE")
+miss_pkgs <- pkgs[!pkgs %in% installed.packages()[,1]] # vector of missing packages
+if(length(miss_pkgs)>0){
+  install.packages(miss_pkgs)
+}
+invisible(lapply(pkgs,library,character.only=TRUE))
+```
+
+
+####3. Reading in the data
+```{r}
+train.dataset = read_csv("train.csv")
+train.dataset$data = "train"
+test.dataset = read_csv("test.csv")
+test.dataset$data = "test"
+```
+
+####4. Combine the dataset so that we can clean the data at once
+```{r}
+titanic_dataset = bind_rows(train.dataset,test.dataset)
+```
+
+####5. Drop some variables that are not really important
+```{r}
+titanic_dataset<-titanic_dataset%>%
+  dplyr::select(-Name,-Ticket,-Cabin)
+```
+
+####6. Describe the data
+```{r}
+Hmisc::describe(titanic_dataset)
+
+missingness = data.frame(sapply(titanic_dataset,function(x) sum(is.na(x))))
+
+#Age and Survived have the highest missingness so we need to impute.
+```
+####7. Convert the variables to the appropriate data types
+```{r}
+cats = c("Pclass","Sex","SibSp","Parch","Embarked")
+#factor
+titanic_dataset$Survived<-as.factor(titanic_dataset$Survived)
+titanic_dataset$Pclass<-as.factor(titanic_dataset$Pclass)
+titanic_dataset$Sex<-as.factor(titanic_dataset$Sex)
+titanic_dataset$SibSp<-as.factor(titanic_dataset$SibSp)
+titanic_dataset$Parch<-as.factor(titanic_dataset$Parch)
+titanic_dataset$Embarked<-as.factor(titanic_dataset$Embarked)
+```
+
+
+####8. Imputation of missing values using mice
+```{r}
+titanic_imputation<- mice(titanic_dataset[, c("Age","Embarked","Fare")], method = "cart", seed = 201,m = 5)
+
+titanic_imputation <- complete(titanic_imputation, sample(c(1:5), 1))
+titanic_dataset2 <- cbind.data.frame(titanic_dataset[, c(-5,-8,-9)], titanic_imputation)
+
+missingness2 = data.frame(sapply(titanic_dataset2,function(x) sum(is.na(x))))
+
+```
+
+
+####9. Generate some variables, and drop others
+```{r}
+## Generate a variable that indicates whether one had a sibling in the ship or not
+titanic_dataset2$SibSp2 = ifelse(titanic_dataset2$SibSp ==0, "No","Yes")
+titanic_dataset2$SibSp2<-as.factor(titanic_dataset2$SibSp2)
+titanic_dataset2$SibSp<-NULL
+## Generate a variable that indicates whether one had a parent or child in the ship or not
+titanic_dataset2$Parch2 = ifelse(titanic_dataset2$Parch ==0, "No","Yes")
+titanic_dataset2$Parch2<-as.factor(titanic_dataset2$Parch2)
+
+titanic_dataset2$Parch<-NULL
+```
+
+
+####10. Split the data back into train and test
+```{r}
+train.dataset2 = titanic_dataset2[1:891,]
+train.dataset2$data<-NULL
+test.dataset2 = titanic_dataset2[892:1309,]
+test.dataset2$data<-NULL
+```
+
+####10. Take care of imbalanced data
+```{r}
+train.dataset.rose <- ROSE(Survived ~ ., data = train.dataset2[,-1], seed = seed_object)$data
+#train.dataset.rose$PassengerId<-train.dataset2$PassengerId
+table(train.dataset.rose$Survived)
+```
+
+####11. Create the train control object
+```{r}
+myControl <- trainControl(
+  method = "repeatedcv", number=5, repeats=5,
+  classProbs = FALSE, 
+  verboseIter = TRUE,
+  savePredictions = TRUE
+)
+```
+
+####12. Fit a ridge or lasso model
+```{r}
+train.dataset.rose_glmnet<-train.dataset.rose
+set.seed(seed_object)
+model_glmnet <- train(
+  Survived ~ ., data = train.dataset.rose_glmnet,
+  metric = "Accuracy",
+  method = "glmnet",
+  trControl = myControl,
+  preProcess = c('zv', 'center', 'scale')
+)
+
+```
+
+####13. Predict the values using test dataset, for the glmnet model
+```{r}
+test.dataset2.rose_glmnet<-test.dataset2
+test.dataset2.rose_glmnet$Survived <- predict(model_glmnet, newdata = test.dataset2.rose_glmnet)
+
+
+train.dataset.rose_glmnet$Survived2 <- predict(model_glmnet, newdata = train.dataset.rose_glmnet)
+conf.matrix<-table(train.dataset.rose_glmnet$Survived,train.dataset.rose_glmnet$Survived2)
+conf.matrix
+
+accuracy = (sum(conf.matrix[1],conf.matrix[4])/sum(conf.matrix))
+accuracy
+
+titanic_submission<-test.dataset2.rose_glmnet%>%
+  dplyr::select(PassengerId,Survived)
+write.csv(titanic_submission,"titanic_submission_glmnet.csv")
+## training data accuracy on glmnet is 0.7800224
+
+##The score is 0.76555
+
+```
+####14. XGBoost model
+```{r}
+#Need to tune on two parameters
+train.dataset.rose_xgb = train.dataset.rose
+set.seed(seed_object)
+model_xgb <-train(
+  Survived ~ ., data = train.dataset.rose_xgb,
+  metric = "Accuracy",
+  method = "xgbTree",
+  trControl = myControl,
+  preProcess = c('zv', 'center', 'scale', 'pca')
+)
+```
+
+####15.Predict the values using test dataset, for the XGBoost model
+```{r}
+
+test.dataset2.rose_xgb<-test.dataset2
+test.dataset2.rose_xgb$Survived <- predict(model_xgb, newdata = test.dataset2.rose_xgb)
+
+
+train.dataset.rose_xgb$Survived2<- predict(model_xgb, newdata = train.dataset.rose_xgb)
+conf.matrix<-table(train.dataset.rose_xgb$Survived,train.dataset.rose_xgb$Survived2)
+conf.matrix
+
+accuracy = (sum(conf.matrix[1],conf.matrix[4])/sum(conf.matrix))
+accuracy
+## training data accuracy on xgb is 0.9034792
+
+titanic_submission<-test.dataset2.rose_xgb%>%
+  dplyr::select(PassengerId,Survived)
+write.csv(titanic_submission,"titanic_submission_xgb.csv")
+
+## The score is 0.73684
+```
+
